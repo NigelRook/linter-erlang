@@ -20,6 +20,11 @@ module.exports =
       title: 'pa paths'
       default: "./ebin"
       description: "Paths seperated by space"
+    parseRebarConfigs:
+      type: 'boolean'
+      title: 'Parse Rebar configs'
+      default: false
+      description: 'Parse rebar configs for pa/include paths'
   activate: ->
     @subscriptions = new CompositeDisposable
     @subscriptions.add atom.config.observe 'linter-erlang.executablePath',
@@ -31,6 +36,9 @@ module.exports =
     @subscriptions.add atom.config.observe 'linter-erlang.paPaths',
       (paPaths) =>
         @paPaths = paPaths
+    @subscriptions.add atom.config.observe 'linter-erlang.parseRebarConfigs',
+      (parseRebarConfigs) =>
+        @parseRebarConfigs = parseRebarConfigs
   deactivate: ->
     @subscriptions.dispose()
   provideLinter: ->
@@ -42,18 +50,45 @@ module.exports =
         return new Promise (resolve, reject) =>
           filePath = textEditor.getPath()
           project_path = atom.project.getPaths()
+          deps_dir = ""
           project_deps_ebin = ""
 
-          fs.readdirSync(project_path.toString() + "/deps/").filter(
+          include_dirs = @includeDirs.split(" ")
+
+          if @parseRebarConfigs
+            search_dir = path.dirname(filePath)
+            additional_include_dirs = []
+            until path.relative(project_path.toString(), search_dir) == '..'
+              config_file = path.join(search_dir, 'rebar.config')
+              if fs.existsSync(config_file)
+                rebar_config = fs.readFileSync(config_file)
+                if deps_dir == ""
+                  re = /{\s*deps_dir\s*,\s*"([^"]*)"\s*}\s*\./
+                  match = re.exec(rebar_config)
+                  if match && match.length >= 2
+                    deps_dir = path.resolve(search_dir, match[1])
+                include_dirs.push(path.resolve(search_dir, "./include"))
+                re = /{\s*lib_dirs\s*,\s*\[([^\]]*)\]\s*}\s*\./
+                match = re.exec(rebar_config)
+                if match && match.length >= 2
+                  for dir in match[1].split(',')
+                    include_dir = dir.replace(/^["\s]*|["\s]*$/g, '')
+                    include_dirs.push(path.resolve(search_dir, include_dir))
+              search_dir = path.resolve(search_dir, '..')
+
+          if deps_dir == ""
+            deps_dir = project_path + "/deps/"
+
+          fs.readdirSync(deps_dir.toString()).filter(
             (item) ->
-              project_deps_ebin = project_deps_ebin + " ./deps/" + item + "/ebin/"
+              project_deps_ebin = deps_dir + item + "/ebin/"
           )
 
           @paPaths = @paPaths + project_deps_ebin
 
           compile_result = ""
           erlc_args = ["-Wall"]
-          erlc_args.push "-I", dir.trim() for dir in @includeDirs.split(" ")
+          erlc_args.push "-I", dir.trim() for dir in include_dirs
           erlc_args.push "-pa", pa.trim() for pa in @paPaths.split(" ") unless @paPaths == ""
           erlc_args.push "-o", os.tmpDir()
           erlc_args.push filePath
